@@ -1,0 +1,6 @@
+*.apkg
+*.anki2
+*.anki21
+*.anki21b
+.DS_Store
+__pycache__/
