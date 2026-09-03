@@ -1,38 +1,45 @@
 #!/usr/bin/env python3
-import csv, json, urllib.request
+import csv
 from pathlib import Path
 
-ANKI_URL = 'http://127.0.0.1:8765'
-DECK = 'GRE vocabulary for Korean'
-CSV_PATH = Path(__file__).resolve().parents[1] / 'data' / 'vocabulary.csv'
-FIELDS = ['Word','Pronunciation','Part of speech','Definition','Image','Word root','Mnemonic sentence','Mnemonic','ankihub_id']
+from anki_common import FIELDS, anki, target_notes
 
-def anki(action, **params):
-    payload=json.dumps({'action':action,'version':6,'params':params}).encode()
-    req=urllib.request.Request(ANKI_URL,payload,{'Content-Type':'application/json'})
-    with urllib.request.urlopen(req) as r: out=json.load(r)
-    if out.get('error'): raise RuntimeError(out['error'])
-    return out['result']
+CSV_PATH = Path(__file__).resolve().parents[1] / 'data' / 'vocabulary.csv'
 
 def main():
     if not CSV_PATH.exists(): raise SystemExit(f'CSV not found: {CSV_PATH}')
-    ids=anki('findNotes', query=f'deck:"{DECK}"')
-    infos=anki('notesInfo', notes=ids)
-    by_id={n['fields'].get('ankihub_id',{}).get('value',''): n for n in infos}
-    updated=missing=0
+
+    by_id={}
+    for n in target_notes():
+        key=n['fields'].get('ankihub_id',{}).get('value','').strip()
+        if key: by_id.setdefault(key,[]).append(n)
+
     with CSV_PATH.open(encoding='utf-8-sig',newline='') as f:
-        for row in csv.DictReader(f):
-            key=row.get('ankihub_id','').strip()
-            if not key or key not in by_id:
-                missing+=1; continue
-            note=by_id[key]
-            values={k:row.get(k,'') for k in FIELDS if k in note['fields']}
-            anki('updateNoteFields', note={'id':note['noteId'],'fields':values})
-            updated+=1
-    print(f'Done: {updated} notes updated; {missing} unmatched rows.')
+        rows=list(csv.DictReader(f))
+
+    # 한 건이라도 쓰기 전에 전체를 먼저 대조합니다. 매칭이 안 되는 상태에서
+    # 조용히 0건 성공으로 끝나면 안 되기 때문입니다.
+    plan=[]; missing=ambiguous=0
+    for row in rows:
+        key=row.get('ankihub_id','').strip()
+        hits=by_id.get(key) if key else None
+        if not hits: missing+=1; continue
+        if len(hits)>1: ambiguous+=1; continue
+        plan.append((hits[0],row))
+
+    if ambiguous:
+        raise SystemExit(f'중단: ankihub_id가 중복된 노트가 {ambiguous}건 있습니다.\n'
+                         'Anki에서 중복을 정리한 뒤 다시 실행하세요.')
+    if not plan:
+        raise SystemExit(f'중단: CSV {len(rows)}행 중 Anki 노트와 매칭된 것이 하나도 없습니다.\n'
+                         'ankihub_id가 서로 맞지 않습니다. 아무것도 변경하지 않고 종료합니다.')
+
+    for note,row in plan:
+        values={k:row.get(k,'') for k in FIELDS if k in note['fields']}
+        anki('updateNoteFields', note={'id':note['noteId'],'fields':values})
+
+    print(f'Done: {len(plan)} notes updated; {missing} unmatched rows.')
     print('Review scheduling was not changed.')
 
 if __name__=='__main__':
-    try: main()
-    except urllib.error.URLError:
-        raise SystemExit('AnkiConnect에 연결할 수 없습니다. Anki Desktop을 실행했는지 확인하세요.')
+    main()
